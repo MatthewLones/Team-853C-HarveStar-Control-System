@@ -1,0 +1,8 @@
+Connected to /dev/tty.usbmodem101 at 115200 baud.
+Waiting for device to initialize...
+Sent: ping
+
+Received: READY
+Device is ready!
+ * Serving Flask app 'app'
+ * Debug mode: on
