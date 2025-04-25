@@ -14,101 +14,113 @@ export default function ReplayMode({ isMobile }) {
   const [messages, setMessages] = useState([])
   const [isRunning, setIsRunning] = useState(false)
   const [startTime, setStartTime] = useState(null)
+  const [error, setError] = useState(null)
   const scrollRef = useRef(null)
   const [latestCoord, setLatestCoord] = useState(null)
   const [coordHistory, setCoordHistory] = useState([])
   const gridRef = useRef(null)
 
-  const startReplay = () => {
-    if (selectedId === null) return
+  const startReplay = async () => {
+    if (selectedId === null) {
+      setError("Please select a replay sequence");
+      return;
+    }
 
-    setStatus("Sending replay request...")
-    setMessages([])
-    setCoordHistory([])
-    setLatestCoord(null)
-    setIsRunning(true)
-    setStartTime(Date.now())
+    setStatus("Sending replay request...");
+    setMessages([]);
+    setCoordHistory([]);
+    setLatestCoord(null);
+    setError(null);
+    setIsRunning(true);
+    setStartTime(Date.now());
 
-    fetch("/api/start-replay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ index: selectedId }),
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) {
-          setStatus("Replay started!")
-        } else {
-          setStatus("❌ Failed to start replay.")
-          setIsRunning(false)
-        }
-      })
-      .catch((err) => {
-        setStatus("❌ Error contacting server.")
-        setIsRunning(false)
-      })
+    try {
+      const response = await fetch("/api/start-replay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index: selectedId }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        setStatus("Replay started!");
+      } else {
+        throw new Error(data.error || "Failed to start replay");
+      }
+    } catch (err) {
+      setStatus("❌ Failed to start replay");
+      setError(err.message);
+      setIsRunning(false);
+    }
   }
 
   const clearLog = () => {
-    setMessages([])
-    setCoordHistory([])
+    setMessages([]);
+    setCoordHistory([]);
+    setError(null);
   }
 
   useEffect(() => {
-    if (!isRunning) return
+    if (!isRunning) return;
 
-    const interval = setInterval(() => {
-      fetch("/api/replay-status")
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.messages) {
-            setMessages((prev) => {
-              const updated = [
-                ...prev,
-                ...data.messages.map((msg) => ({
-                  ...msg,
-                  timestamp: ((Date.now() - startTime) / 1000).toFixed(2) + "s",
-                })),
-              ]
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch("/api/replay-status");
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-              // Find coordinate updates
-              const lastUpdate = data.messages.reverse().find((m) => m.type === "position");
-              if (lastUpdate && lastUpdate.data) {
-                const [y, x, z] = lastUpdate.data; // Swap x and y, ignore effector
-                const newCoord = {
-                  x,
-                  y,
-                  z,
-                  time: Date.now(),
-                };
-                setLatestCoord(newCoord);
-                setCoordHistory((prev) => [...prev, newCoord]);
-              }
+        const data = await response.json();
+        
+        if (data.messages) {
+          setMessages(prev => [
+            ...prev,
+            ...data.messages.map(msg => ({
+              ...msg,
+              timestamp: ((Date.now() - startTime) / 1000).toFixed(2) + "s",
+            })),
+          ]);
 
-              return updated
-            })
+          // Find coordinate updates
+          const lastUpdate = data.messages.reverse().find((m) => m.type === "position");
+          if (lastUpdate && lastUpdate.data) {
+            const [y, x, z] = lastUpdate.data; // Swap x and y, ignore effector
+            const newCoord = {
+              x,
+              y,
+              z,
+              time: Date.now(),
+            };
+            setLatestCoord(newCoord);
+            setCoordHistory((prev) => [...prev, newCoord]);
           }
-          if (data.done) {
-            setStatus("✅ Replay complete.")
-            setIsRunning(false)
-            clearInterval(interval)
-          }
-        })
-        .catch((err) => {
-          setStatus("❌ Error polling status")
-          setIsRunning(false)
-          clearInterval(interval)
-        })
-    }, 100)
+        }
 
-    return () => clearInterval(interval)
-  }, [isRunning, startTime])
+        if (data.done) {
+          setStatus("✅ Replay complete");
+          setIsRunning(false);
+          clearInterval(interval);
+        }
+      } catch (err) {
+        setStatus("❌ Error polling status");
+        setError(err.message);
+        setIsRunning(false);
+        clearInterval(interval);
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [isRunning, startTime]);
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages])
+  }, [messages]);
 
   // Clean up old coordinate history points
   useEffect(() => {
@@ -116,7 +128,7 @@ export default function ReplayMode({ isMobile }) {
       const now = Date.now()
       setCoordHistory((prev) => prev.filter((coord) => now - coord.time < 3000))
     }
-  }, [coordHistory])
+  }, [coordHistory]);
 
   // Convert grid coordinates to pixel positions
   const coordToPixel = (x, y) => {
@@ -160,11 +172,20 @@ export default function ReplayMode({ isMobile }) {
         Replay Mode
       </h2>
 
+      {error && (
+        <div className="bg-red-900/50 border border-red-500/30 rounded-lg p-3 text-red-200">
+          {error}
+        </div>
+      )}
+
       <div className="space-y-2">
         {REPLAY_OPTIONS.map((option) => (
           <button
             key={option.id}
-            onClick={() => setSelectedId(option.id)}
+            onClick={() => {
+              setSelectedId(option.id);
+              setError(null);
+            }}
             className={`block w-full text-left px-4 py-3 rounded-lg transition shadow-md border text-sm font-bold
               ${
                 selectedId === option.id
@@ -202,7 +223,7 @@ export default function ReplayMode({ isMobile }) {
         <ul className="space-y-1 text-blue-100">
           {messages.map((msg, i) => {
             if (msg.type === "position" && msg.data) {
-              const [y, x, z] = msg.data; // Swap x and y, ignore effector
+              const [y, x, z] = msg.data;
               return (
                 <li key={i} className="flex items-center space-x-2">
                   <span className="text-gray-400">🕒</span>
@@ -222,8 +243,9 @@ export default function ReplayMode({ isMobile }) {
                   <span className="text-cyan-200">{msg.timestamp}</span>
                   <span className="text-yellow-300">⚠️ Out of bounds!</span>
                 </li>
-              )
+              );
             }
+            
             if (msg.type === "done") {
               return (
                 <li key={i} className="text-green-400 font-semibold flex items-center space-x-2">
@@ -231,8 +253,9 @@ export default function ReplayMode({ isMobile }) {
                   <span className="text-cyan-200">{msg.timestamp}</span>
                   <span className="text-green-400">✅ Replay Complete</span>
                 </li>
-              )
+              );
             }
+            
             if (msg.type === "error") {
               return (
                 <li key={i} className="text-red-400 flex items-center space-x-2">
@@ -240,15 +263,10 @@ export default function ReplayMode({ isMobile }) {
                   <span className="text-cyan-200">{msg.timestamp}</span>
                   <span className="text-red-400">❌ Error: {msg.message}</span>
                 </li>
-              )
+              );
             }
-            return (
-              <li key={i} className="text-gray-400 italic flex items-center space-x-2">
-                <span>🕒</span>
-                <span className="text-cyan-200">{msg.timestamp}</span>
-                <span>{JSON.stringify(msg)}</span>
-              </li>
-            )
+            
+            return null;
           })}
         </ul>
         <p className="mt-2 italic text-xs text-cyan-300">Status: {status}</p>

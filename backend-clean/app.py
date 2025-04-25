@@ -1,15 +1,18 @@
-from flask import Flask, request, jsonify
+"""
+HarveStar Robotic Arm Control Server
+Main Flask application for controlling the robotic arm and handling video streaming.
+"""
+
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-import os
 import time
 import cv2
-from flask import Response
 from arm_controller.armComms import ArmController
 
-# === Define Replay Sequences ===
+# Predefined movement sequences for replay mode
 REPLAY_SEQUENCES = {
     0: [
-        ([16.5, 20.5, 3.5, 45], 0.5),
+        ([16.5, 20.5, 3.5, 45], 0.5),  # (coordinates, delay)
         ([20, 24, 2.5, 45], 0.4),
         ([19, 23, 2.5, 40], 0.2),
         ([17, 23, 6, 45], 0.2),
@@ -38,7 +41,7 @@ REPLAY_SEQUENCES = {
     ]
 }
 
-"""REPLAY_SEQUENCES = {
+"""REPLAY_SEQUENCES = {   For wave hello sequence
     0: [
         ([28, -10, 15, 45], 0.2),
         ([28, 0, 10, 40], 0.2),
@@ -51,43 +54,43 @@ REPLAY_SEQUENCES = {
     ]
 }"""
 
-
+# Initialize Flask app and CORS
 app = Flask(__name__)
 CORS(app)
 
-# Only run this in the main process (not the reloader)
+# Initialize hardware controllers
 harvestar = ArmController(port="/dev/tty.usbmodem101")
-
-
 camera = cv2.VideoCapture(0)
 
 def generate_frames():
+    """Generate video frames from the camera feed."""
     while True:
         success, frame = camera.read()
         if not success:
             print("[Flask] ❌ Failed to grab frame.")
             break
-        else:
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 @app.route('/video-feed')
 def video_feed():
+    """Stream live video feed from the camera."""
     print("[Flask] 🎥 Sending live video feed...")
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-
+# Global state for robot arm
 arm_has_started = False
 
 @app.route('/api/arm-ready', methods=['GET'])
 def api_arm_ready():
+    """Check if the robot arm is ready for operation."""
     global arm_has_started
 
     if arm_has_started:
         print("[Flask] Arm already marked ready. Skipping wait.")
-        return jsonify({ "ready": True })
+        return jsonify({"ready": True})
 
     print("[Flask] Waiting for robot readiness...")
     start = time.time()
@@ -100,20 +103,19 @@ def api_arm_ready():
         if response and response.get("type") == "ready":
             print("[Flask] Robot is ready!")
             arm_has_started = True
-            return jsonify({ "ready": True })
+            return jsonify({"ready": True})
 
     print("[Flask] Timeout waiting for robot.")
-    return jsonify({ "ready": False, "error": "Timeout." }), 408
-
-
+    return jsonify({"ready": False, "error": "Timeout."}), 408
 
 @app.route('/api/move-arm', methods=['POST'])
 def move_arm():
+    """Move the robot arm to specified coordinates."""
     try:
         data = request.get_json()
         print(f"[Flask] Received coords: {data}")
 
-        # Validate the structure
+        # Validate request data
         if not isinstance(data, dict):
             raise ValueError("Invalid request format")
         if not all(k in data for k in ['x', 'y', 'z', 'effector']):
@@ -121,14 +123,14 @@ def move_arm():
         if not all(isinstance(data[k], (int, float)) for k in ['x', 'y', 'z', 'effector']):
             raise ValueError("Coordinates must be numbers")
 
+        # Validate effector angle
         eff = data['effector']
         if eff < 0 or eff > 90:
             raise ValueError("Effector angle must be between 0 and 90")
 
-        # Send to robot
+        # Send movement command to robot
         coords = [data['x'], data['y'], data['z'], data['effector']]
-        response = harvestar.move_servos(coords)  # ✅ should accept 4 arguments now
-
+        response = harvestar.move_servos(coords)
         return jsonify(response)
 
     except Exception as e:
@@ -137,24 +139,19 @@ def move_arm():
             'type': 'error',
             'message': str(e)
         }), 400
-    
 
-# === Global Replay State ===
+# Global state for replay functionality
 replay_status = {
     "running": False,
     "messages": []
 }
 
-
-# === Endpoint: Start Replay ===
 @app.route('/api/start-replay', methods=['POST'])
 def start_replay():
+    """Start a predefined movement sequence."""
     try:
         data = request.get_json(force=True)
-        print("[DEBUG] Raw replay request payload:", data)
-
         index = data.get("index")
-        print(f"[DEBUG] Received index: {index} ({type(index)})")
 
         try:
             index = int(index)
@@ -168,8 +165,8 @@ def start_replay():
         print("[ERROR] Replay start failed:", str(e))
         return jsonify({"success": False, "error": str(e)}), 400
 
-# === Run Replay Logic ===
 def run_replay(index):
+    """Execute a predefined movement sequence."""
     if index not in REPLAY_SEQUENCES:
         raise ValueError(f"Replay index {index} not defined")
 
@@ -182,7 +179,6 @@ def run_replay(index):
         for coords, delay in REPLAY_SEQUENCES[index]:
             print(f"[Replay] Sending move: {coords}")
             response = harvestar.move_servos(coords)
-            print("RESPONSE RECIVED, HOURAAY!")
             replay_status["messages"].append(response)
             time.sleep(delay)
 
@@ -198,11 +194,10 @@ def run_replay(index):
 
     replay_status["running"] = False
 
-# === Endpoint: Poll Replay Updates ===
 @app.route('/api/replay-status', methods=['GET'])
 def replay_status_api():
+    """Get the current status of the replay sequence."""
     try:
-        print("Status check!")
         messages = replay_status["messages"]
         replay_status["messages"] = []  # Clear buffer after sending
         return jsonify({
@@ -212,7 +207,6 @@ def replay_status_api():
 
     except Exception as e:
         return jsonify({"type": "error", "message": str(e)}), 500
-
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5050, debug=True, use_reloader=False, threaded=True)
