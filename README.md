@@ -2,7 +2,7 @@
 
 A web application for controlling an EEZYbotARM MK2 with real-time feedback and multiple control modes.
 
-![HarveStar System Architecture](./architecture.svg)
+![HarveStar System Architecture](./architecture.png)
 
 ## System Overview
 
